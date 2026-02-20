@@ -200,5 +200,131 @@ visiting file name, or the buffer name if unsaved."
       (ascii-tree-export--walk-markdown (ascii-tree-export--md-parse-headings) out-buf)))
     (display-buffer out-buf)))
 
+;;; Tree-to-Org Conversion
+
+(defun ascii-tree-convert--strip-tree-chars (line)
+  "Remove tree characters from LINE and return (DEPTH . CLEANED-TEXT).
+DEPTH is calculated from the number of prefix columns (4 chars per level).
+CLEANED-TEXT has all tree characters removed."
+  (let* (;; Find where the connector (├ or └) appears, if any
+         (connector-pos (string-match "[├└]" line))
+         ;; For content lines without connector, count leading pipes/spaces
+         (content-prefix (if (not connector-pos)
+                             (if (string-match "^\\([│ ]*\\)" line)
+                                 (match-string 1 line)
+                               "")
+                           nil))
+         ;; Calculate depth based on connector position or content prefix length
+         (depth (if connector-pos
+                    (/ connector-pos 4)
+                  (/ (length content-prefix) 4)))
+         ;; Find where actual text content starts (after all tree chars)
+         (text-start (if (string-match "[^├└│ ─]" line)
+                         (match-beginning 0)
+                       (length line)))
+         ;; Extract just the text content
+         (text (substring line text-start)))
+    (cons depth (string-trim text))))
+
+(defun ascii-tree-convert--parse-headline (text)
+  "Parse TEXT into (TITLE . SUBTITLE) cons pair.
+Checks for ' # ' separator first (tree convention), then ' -- ' (export convention).
+If neither found, entire TEXT is the title (subtitle is nil)."
+  (let ((hash-pos (string-match " # " text))
+        (dash-pos (string-match " -- " text)))
+    (cond
+     (hash-pos
+      (cons (string-trim (substring text 0 hash-pos))
+            (string-trim (substring text (+ hash-pos 3)))))
+     (dash-pos
+      (cons (string-trim (substring text 0 dash-pos))
+            (string-trim (substring text (+ dash-pos 4)))))
+     (t
+      (cons (string-trim text) nil)))))
+
+(defun ascii-tree-convert--parse-lines (lines)
+  "Parse LINES into list of (DEPTH TITLE SUBTITLE CONTENT-LINES).
+Classifies lines as headlines (with connectors ├── or └──) or content.
+Content lines are accumulated under the current headline."
+  (let (result current-headline)
+    (dolist (line lines)
+      (let ((trimmed (string-trim line)))
+        (unless (string-empty-p trimmed)
+          (let* ((stripped (ascii-tree-convert--strip-tree-chars line))
+                 (depth (car stripped))
+                 (text (cdr stripped))
+                 (is-headline (string-match-p "[├└]──" line)))
+            (if is-headline
+                (progn
+                  ;; Save previous headline
+                  (when current-headline
+                    (push (list (nth 0 current-headline)
+                                (nth 1 current-headline)
+                                (nth 2 current-headline)
+                                (nreverse (nth 3 current-headline)))
+                          result))
+                  ;; Start new headline
+                  (let ((parsed (ascii-tree-convert--parse-headline text)))
+                    (setq current-headline
+                          (list depth (car parsed) (cdr parsed) '()))))
+              ;; Content line - append to current headline (skip empty content)
+              (when (and current-headline (not (string-empty-p text)))
+                (push text (nth 3 current-headline))))))))
+    ;; Don't forget the last headline
+    (when current-headline
+      (push (list (nth 0 current-headline)
+                  (nth 1 current-headline)
+                  (nth 2 current-headline)
+                  (nreverse (nth 3 current-headline)))
+            result))
+    (nreverse result)))
+
+(defun ascii-tree-convert--emit-org (parsed-data)
+  "Convert PARSED-DATA into org-mode formatted string.
+PARSED-DATA is a list of (DEPTH TITLE SUBTITLE CONTENT-LINES) tuples.
+Org level = DEPTH + 1 (org starts at level 1, tree depth starts at 0)."
+  (let ((result ""))
+    (dolist (entry parsed-data)
+      (let* ((depth (nth 0 entry))
+             (title (nth 1 entry))
+             (subtitle (nth 2 entry))
+             (content (nth 3 entry))
+             (level (1+ depth))
+             (stars (make-string level ?*))
+             (headline (if subtitle
+                           (format "%s %s -- %s" stars title subtitle)
+                         (format "%s %s" stars title))))
+        ;; Add headline
+        (setq result (concat result headline "\n"))
+        ;; Add content lines
+        (dolist (line content)
+          (setq result (concat result line "\n")))
+        ;; Add blank line for readability
+        (setq result (concat result "\n"))))
+    result))
+
+;;;###autoload
+(defun ascii-tree-convert ()
+  "Convert tree-structured text to org-mode format.
+If region is active, converts the region. Otherwise converts entire buffer.
+Output goes to *ascii-tree-convert-result* buffer in org-mode."
+  (interactive)
+  (let* ((input-text (if (use-region-p)
+                         (buffer-substring-no-properties (region-beginning) (region-end))
+                       (buffer-substring-no-properties (point-min) (point-max))))
+         (lines (split-string input-text "\n"))
+         (out-buf (get-buffer-create "*ascii-tree-convert-result*")))
+    (when (string-empty-p (string-trim input-text))
+      (user-error "No input to convert"))
+    (let ((parsed (ascii-tree-convert--parse-lines lines)))
+      (when (null parsed)
+        (user-error "No tree structure found in input"))
+      (let ((org-content (ascii-tree-convert--emit-org parsed)))
+        (with-current-buffer out-buf
+          (erase-buffer)
+          (insert org-content)
+          (org-mode))
+        (display-buffer out-buf)))))
+
 (provide 'ascii-tree-export)
 ;;; ascii-tree-export.el ends here

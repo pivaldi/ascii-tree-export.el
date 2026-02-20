@@ -185,4 +185,185 @@
         (should (string-match-p "Gamma" content)))
       (kill-buffer out-buf))))
 
+;;; ascii-tree-convert tests
+
+(ert-deftest ascii-tree-convert--strip-tree-chars-root ()
+  "Root level has depth 0."
+  (let ((result (ascii-tree-convert--strip-tree-chars "├── contracts/")))
+    (should (equal 0 (car result)))
+    (should (equal "contracts/" (cdr result)))))
+
+(ert-deftest ascii-tree-convert--strip-tree-chars-depth-1 ()
+  "First level child has depth 1."
+  (let ((result (ascii-tree-convert--strip-tree-chars "│   ├── go.mod")))
+    (should (equal 1 (car result)))
+    (should (equal "go.mod" (cdr result)))))
+
+(ert-deftest ascii-tree-convert--strip-tree-chars-depth-2 ()
+  "Second level child has depth 2."
+  (let ((result (ascii-tree-convert--strip-tree-chars "│   │   ├── api.go")))
+    (should (equal 2 (car result)))
+    (should (equal "api.go" (cdr result)))))
+
+(ert-deftest ascii-tree-convert--strip-tree-chars-last-sibling ()
+  "Last sibling uses └── connector."
+  (let ((result (ascii-tree-convert--strip-tree-chars "│   └── README.md")))
+    (should (equal 1 (car result)))
+    (should (equal "README.md" (cdr result)))))
+
+(ert-deftest ascii-tree-convert--strip-tree-chars-content-line ()
+  "Content line with only pipes/spaces."
+  (let ((result (ascii-tree-convert--strip-tree-chars "│   │   Dependencies: ZERO")))
+    (should (equal 2 (car result)))
+    (should (equal "Dependencies: ZERO" (cdr result)))))
+
+(ert-deftest ascii-tree-convert--strip-tree-chars-spaces-only ()
+  "Spaces instead of pipes (under last sibling)."
+  (let ((result (ascii-tree-convert--strip-tree-chars "    └── final.txt")))
+    (should (equal 1 (car result)))
+    (should (equal "final.txt" (cdr result)))))
+
+(ert-deftest ascii-tree-convert--parse-headline-no-separator ()
+  "Headline with no subtitle separator."
+  (let ((result (ascii-tree-convert--parse-headline "README.md")))
+    (should (equal "README.md" (car result)))
+    (should (null (cdr result)))))
+
+(ert-deftest ascii-tree-convert--parse-headline-double-dash ()
+  "Headline with -- separator (ascii-tree-export convention)."
+  (let ((result (ascii-tree-convert--parse-headline "go.mod -- Module definition")))
+    (should (equal "go.mod" (car result)))
+    (should (equal "Module definition" (cdr result)))))
+
+(ert-deftest ascii-tree-convert--parse-headline-hash ()
+  "Headline with # separator (tree command convention)."
+  (let ((result (ascii-tree-convert--parse-headline "contracts/ # Unified module")))
+    (should (equal "contracts/" (car result)))
+    (should (equal "Unified module" (cdr result)))))
+
+(ert-deftest ascii-tree-convert--parse-headline-hash-priority ()
+  "# separator takes priority over --."
+  (let ((result (ascii-tree-convert--parse-headline "file.txt # comment -- note")))
+    (should (equal "file.txt" (car result)))
+    (should (equal "comment -- note" (cdr result)))))
+
+(ert-deftest ascii-tree-convert--parse-lines-simple ()
+  "Parse simple tree with headlines only."
+  (let* ((lines '("├── contracts/"
+                  "│   ├── go.mod"
+                  "│   └── README.md"))
+         (result (ascii-tree-convert--parse-lines lines)))
+    (should (equal 3 (length result)))
+    ;; First headline
+    (should (equal 0 (nth 0 (nth 0 result))))
+    (should (equal "contracts/" (nth 1 (nth 0 result))))
+    (should (null (nth 2 (nth 0 result))))
+    ;; Second headline
+    (should (equal 1 (nth 0 (nth 1 result))))
+    (should (equal "go.mod" (nth 1 (nth 1 result))))))
+
+(ert-deftest ascii-tree-convert--parse-lines-with-content ()
+  "Parse tree with content lines."
+  (let* ((lines '("├── contracts/ # Module"
+                  "│   Some description"
+                  "│   "
+                  "│   ├── go.mod -- Manifest"))
+         (result (ascii-tree-convert--parse-lines lines)))
+    (should (equal 2 (length result)))
+    ;; First headline with content
+    (should (equal "contracts/" (nth 1 (nth 0 result))))
+    (should (equal "Module" (nth 2 (nth 0 result))))
+    (should (equal '("Some description") (nth 3 (nth 0 result))))
+    ;; Second headline
+    (should (equal "go.mod" (nth 1 (nth 1 result))))
+    (should (equal "Manifest" (nth 2 (nth 1 result))))))
+
+(ert-deftest ascii-tree-convert--parse-lines-multi-line-content ()
+  "Content with multiple lines."
+  (let* ((lines '("├── api.go"
+                  "│   type Service interface {"
+                  "│     GetData() error"
+                  "│   }"))
+         (result (ascii-tree-convert--parse-lines lines)))
+    (should (equal 1 (length result)))
+    (should (equal 3 (length (nth 3 (nth 0 result)))))
+    (should (member "type Service interface {" (nth 3 (nth 0 result))))))
+
+(ert-deftest ascii-tree-convert--emit-org-simple ()
+  "Emit org format for simple headlines."
+  (let* ((parsed '((0 "contracts/" nil nil)
+                   (1 "go.mod" nil nil)))
+         (result (ascii-tree-convert--emit-org parsed)))
+    (should (string-match-p "^\\* contracts/" result))
+    (should (string-match-p "^\\*\\* go.mod" result))))
+
+(ert-deftest ascii-tree-convert--emit-org-with-subtitle ()
+  "Emit org format with subtitle separator."
+  (let* ((parsed '((0 "go.mod" "Module definition" nil)))
+         (result (ascii-tree-convert--emit-org parsed)))
+    (should (string-match-p "\\* go.mod -- Module definition" result))))
+
+(ert-deftest ascii-tree-convert--emit-org-with-content ()
+  "Emit org format with content lines."
+  (let* ((parsed '((0 "contracts/" "Module" ("Some description" "More text"))))
+         (result (ascii-tree-convert--emit-org parsed)))
+    (should (string-match-p "\\* contracts/ -- Module" result))
+    (should (string-match-p "Some description" result))
+    (should (string-match-p "More text" result))))
+
+(ert-deftest ascii-tree-convert--emit-org-depth-levels ()
+  "Org level = depth + 1."
+  (let* ((parsed '((0 "L1" nil nil)
+                   (1 "L2" nil nil)
+                   (2 "L3" nil nil)))
+         (result (ascii-tree-convert--emit-org parsed)))
+    (should (string-match-p "^\\* L1" result))
+    (should (string-match-p "^\\*\\* L2" result))
+    (should (string-match-p "^\\*\\*\\* L3" result))))
+
+(ert-deftest ascii-tree-convert-entry-point-buffer ()
+  "Entry point converts whole buffer when no region active."
+  (with-temp-buffer
+    (insert "├── contracts/\n")
+    (insert "│   Module definition\n")
+    (insert "│   ├── go.mod -- Manifest\n")
+    (ascii-tree-convert)
+    (let* ((out-buf (get-buffer "*ascii-tree-convert-result*")))
+      (should out-buf)
+      (with-current-buffer out-buf
+        (should (eq major-mode 'org-mode))
+        (let ((content (buffer-string)))
+          (should (string-match-p "\\* contracts/" content))
+          (should (string-match-p "Module definition" content))
+          (should (string-match-p "\\*\\* go.mod -- Manifest" content))))
+      (kill-buffer out-buf))))
+
+(ert-deftest ascii-tree-convert-entry-point-region ()
+  "Entry point converts only selected region when active."
+  (with-temp-buffer
+    (insert "Ignore this\n")
+    (insert "├── contracts/\n")
+    (insert "│   └── go.mod\n")
+    (insert "Ignore this too\n")
+    ;; Select region (lines 2-3)
+    (goto-char (point-min))
+    (forward-line 1)
+    (set-mark (point))
+    (forward-line 2)
+    (activate-mark)
+    (ascii-tree-convert)
+    (let* ((out-buf (get-buffer "*ascii-tree-convert-result*")))
+      (should out-buf)
+      (with-current-buffer out-buf
+        (let ((content (buffer-string)))
+          (should (string-match-p "\\* contracts/" content))
+          (should (string-match-p "\\*\\* go.mod" content))
+          (should-not (string-match-p "Ignore" content))))
+      (kill-buffer out-buf))))
+
+(ert-deftest ascii-tree-convert-entry-point-empty-input ()
+  "Entry point signals error on empty input."
+  (with-temp-buffer
+    (should-error (ascii-tree-convert) :type 'user-error)))
+
 ;;; ascii-tree-export-test.el ends here

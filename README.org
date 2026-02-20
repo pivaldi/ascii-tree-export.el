@@ -76,6 +76,52 @@ M-x ascii-tree-export
 
 A buffer named =*ascii-tree-export-FILENAME*= opens with the tree output.
 
+* Converting Tree Text to Org-mode
+
+=ascii-tree-convert= does the reverse: converts tree-structured text (like output
+from the =tree= command) into org-mode format.
+
+** Usage
+
+Open any buffer containing tree-structured text (or select a region), then run:
+
+#+begin_example
+M-x ascii-tree-convert
+#+end_example
+
+A buffer named =*ascii-tree-convert-result*= opens with org-mode formatted content.
+
+** Example
+
+Given this tree text:
+
+#+begin_example
+├── service-manager/
+│   ├── go.work # Go workspace
+│   │   use (./contracts ./services/...)
+│   └── contracts/ -- Unified module
+│       └── go.mod
+#+end_example
+
+Running =M-x ascii-tree-convert= produces:
+
+#+begin_src org
+,* service-manager/
+,** go.work -- Go workspace
+use (./contracts ./services/...)
+
+,** contracts/ -- Unified module
+,*** go.mod
+#+end_src
+
+** Subtitle Detection
+
+The converter detects both subtitle formats:
+- =# subtitle= (tree command convention)
+- =-- subtitle= (ascii-tree-export convention)
+
+Both are converted to org's =-- separator= format.
+
 * Configuration
 
 ** Subtitle separator
@@ -93,10 +139,11 @@ the tree. The separator string is configurable:
 
 * Supported formats
 
-| Format      | Headlines | Paragraphs | Lists | Src blocks | Tables |
-|-------------+-----------+------------+-------+------------+--------|
-| Org-mode    | yes       | yes        | yes   | yes        | yes    |
-| Markdown    | yes       | yes        | yes   | —          | —      |
+| Format      | Export | Convert | Content Support |
+|-------------+--------+---------+-----------------|
+| Org-mode    | yes    | yes     | Full (AST)      |
+| Markdown    | yes    | —       | Basic (text)    |
+| Tree text   | —      | yes     | Plain text      |
 
 Org-mode content is extracted via =org-element=, giving full structural fidelity.
 Markdown content is collected as raw text lines between headings (no AST parsing).
